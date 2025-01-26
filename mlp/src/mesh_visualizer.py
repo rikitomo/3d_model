@@ -131,6 +131,7 @@ def visualize_k_file(file_path: str, pid_filter: list = None, show_edges: bool =
 if __name__ == "__main__":
     # サンプルファイルの可視化
     file_path = "mlp/data/model_before/Manual-chair-geometry-1.k"
+    # file_path = "mlp/data//model_predicted/predicted_Manual-chair-geometry-1.k"
     
     # パーツ情報を取得
     _, elements = KFileLoader.load_single_file(file_path)
@@ -140,7 +141,7 @@ if __name__ == "__main__":
     visualize_k_file(file_path, pid_filter=None, show_edges=True, debug=True)
     
     # # 要素数が多い順に最初の2つのパーツを表示
-    # sorted_pids = sorted(pid_counts.items(), key=lambda x: x[1], reverse=True)
+    # sorted_ipids = sorted(pid_counts.items(), key=lambda x: x[1], reverse=True)
     # selected_pids = [pid for pid, _ in sorted_pids[:2]]
     # print(f"\n要素数の多い順に最初の2つのPIDを表示: {selected_pids}")
     

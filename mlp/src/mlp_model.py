@@ -50,30 +50,35 @@ class AfterBeforeDataset(Dataset):
         return after_coords, before_coords
 
 class NodeMLP(nn.Module):
-    def __init__(self, hidden_dims: List[int] = [64, 128, 64]):
+    def __init__(self, num_nodes: int, hidden_dims: List[int] = [256, 512, 256]):
         """
         Args:
+            num_nodes (int): モデルの節点数
             hidden_dims (List[int]): 隠れ層のユニット数のリスト
         """
         super().__init__()
         
         layers = []
-        input_dim = 3  # (x, y, z)
+        input_dim = num_nodes * 3  # 全節点のxyz座標
         
         # 隠れ層の構築
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(input_dim, hidden_dim))
             layers.append(nn.ReLU())
-            layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))
             input_dim = hidden_dim
         
         # 出力層
-        layers.append(nn.Linear(input_dim, 3))  # 3次元座標を出力
+        layers.append(nn.Linear(input_dim, num_nodes * 3))  # 全節点のxyz座標を出力
         
         self.model = nn.Sequential(*layers)
+        self.num_nodes = num_nodes
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.model(x)
+        batch_size = x.size(0)
+        x = x.view(batch_size, -1)  # (batch_size, num_nodes * 3)
+        out = self.model(x)
+        return out  # (batch_size, num_nodes * 3)
 
 def train_model(
     model: nn.Module,
@@ -114,13 +119,10 @@ def train_model(
             after_coords = after_coords.to(device)  # (batch_size, num_nodes, 3)
             before_coords = before_coords.to(device)
             
-            batch_size, num_nodes, _ = after_coords.shape
-            after_coords = after_coords.reshape(-1, 3)  # (batch_size * num_nodes, 3)
-            before_coords = before_coords.reshape(-1, 3)
-            
             optimizer.zero_grad()
-            pred_coords = model(after_coords)  # (batch_size * num_nodes, 3)
-            loss = criterion(pred_coords, before_coords)
+            pred_coords = model(after_coords)  # (batch_size, num_nodes * 3)
+            before_coords_flat = before_coords.view(before_coords.size(0), -1)  # (batch_size, num_nodes * 3)
+            loss = criterion(pred_coords, before_coords_flat)
             
             loss.backward()
             optimizer.step()
@@ -141,12 +143,9 @@ def train_model(
                 after_coords = after_coords.to(device)
                 before_coords = before_coords.to(device)
                 
-                batch_size, num_nodes, _ = after_coords.shape
-                after_coords = after_coords.reshape(-1, 3)
-                before_coords = before_coords.reshape(-1, 3)
-                
                 pred_coords = model(after_coords)
-                loss = criterion(pred_coords, before_coords)
+                before_coords_flat = before_coords.view(before_coords.size(0), -1)
+                loss = criterion(pred_coords, before_coords_flat)
                 
                 val_loss += loss.item()
                 val_batches += 1
@@ -170,27 +169,33 @@ def predict_coordinates(
 
     Args:
         model: 学習済みモデル
-        after_coords: 予測する座標データ (N, 3)
+        after_coords: 予測する座標データ (batch_size, num_nodes, 3)
         device: 使用するデバイス
 
     Returns:
-        torch.Tensor: 予測された座標 (N, 3)
+        torch.Tensor: 予測された座標 (batch_size, num_nodes, 3)
     """
     model = model.to(device)
     model.eval()
     
     with torch.no_grad():
         after_coords = after_coords.to(device)
-        pred_coords = model(after_coords)
+        pred_coords = model(after_coords)  # (batch_size, num_nodes * 3)
+        pred_coords = pred_coords.view(pred_coords.size(0), -1, 3)  # (batch_size, num_nodes, 3)
     
     return pred_coords.cpu()
 
 if __name__ == "__main__":
     # データセットの作成
+    current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     dataset = AfterBeforeDataset(
-        after_dir="data/model_after",
-        before_dir="data/model_before"
+        after_dir=os.path.join(current_dir, "data/model_after"),
+        before_dir=os.path.join(current_dir, "data/model_before")
     )
+    
+    # サンプルデータから節点数を取得
+    sample_after, _ = dataset[0]
+    num_nodes = sample_after.size(0)
     
     # データの分割（訓練:検証 = 8:2）
     train_size = int(0.8 * len(dataset))
@@ -202,7 +207,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
     
     # モデルの作成と学習
-    model = NodeMLP()
+    model = NodeMLP(num_nodes=num_nodes)
     train_losses, val_losses = train_model(
         model=model,
         train_loader=train_loader,
@@ -212,4 +217,6 @@ if __name__ == "__main__":
     )
     
     # モデルの保存
-    torch.save(model.state_dict(), 'models/node_mlp.pth')
+    model_dir = os.path.join(current_dir, "models")
+    os.makedirs(model_dir, exist_ok=True)
+    torch.save(model.state_dict(), os.path.join(model_dir, "node_mlp.pth"))
