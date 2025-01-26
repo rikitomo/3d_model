@@ -1,5 +1,11 @@
 numpy
 numpy-stl
+pandas
 scipy
 matplotlib
 jupyter
+matplotlib
+torch
+pyvista
+trimesh
+tqdm
