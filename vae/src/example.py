@@ -6,14 +6,15 @@ from deformation_gradient import (
     decompose_deformation_gradient,
     compute_rotation_differences,
     compute_RIMD_feature,
-    reconstruct_model_from_RIMD_optimized,
     align_to_reference,
     compute_reconstruction_error,
 )
+from rimd_reconstruction import (
+    reconstruct_model_from_RIMD_optimized,
+)
 from visualization import plot_model
-import numpy as np
 
-is_debug = False
+is_debug = True
 
 def main():
     print("Step 1: 基準モデルの生成")
@@ -70,14 +71,13 @@ def main():
             print(f"頂点 {i}:\n{S}\n")
     
     print("\nStep 9: RIMD特徴量からモデルを再構築")
-    # reconstructed_vertices = reconstruct_model_from_RIMD(rimd_features, base_vertices, neighbors)
-    reconstructed_vertices = reconstruct_model_from_RIMD_optimized(rimd_features, base_vertices, neighbors)
+    reconstructed_vertices = reconstruct_model_from_RIMD_optimized(rimd_features, base_vertices, neighbors, base_faces)
     if is_debug:
         print("再構築された頂点座標:")
         print(reconstructed_vertices)
 
     print("\nStep 10: 基準モデルと再構築モデルの位置合わせ")
-    reconstructed_vertices = align_to_reference(base_vertices, reconstructed_vertices)
+    # reconstructed_vertices = align_to_reference(base_vertices, reconstructed_vertices)
 
     print("\nStep 11: 再構築されたモデルの可視化")
     plot_model(reconstructed_vertices, base_faces, "Step 10: Reconstructed Cube")
