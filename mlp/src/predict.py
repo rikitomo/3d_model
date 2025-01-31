@@ -6,7 +6,7 @@ from module.stl_file_loader import STLFileLoader
 def main():
     # ディレクトリパスの設定
     current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_path = os.path.join(current_dir, "models/node_mlp.pth")
+    model_path = os.path.join(current_dir, "experiments/exp001/models/node_mlp.pth")
     after_dir = os.path.join(current_dir, "data/stl_test")
     before_dir = os.path.join(current_dir, "data/stl_test")
     output_dir = os.path.join(current_dir, "data/stl_predicted")
@@ -37,7 +37,9 @@ def main():
             # モデルの準備
             num_nodes = after_nodes.shape[0]
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            model = NodeMLP(num_nodes=num_nodes)
+            # モデルの設定
+            hidden_dims = [256, 512, 256]  # mlp_model.pyのデフォルト値と同じ
+            model = NodeMLP(num_nodes=num_nodes, hidden_dims=hidden_dims)
             # モデルの読み込み（weights_only=Trueでセキュリティ警告を回避）
             model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
             model.to(device)
@@ -46,14 +48,14 @@ def main():
             # 予測の実行
             # 座標データを取得して形状を変換
             after_coords = after_nodes[:, 1:].float().contiguous()  # (num_nodes, 3)
-            after_coords = after_coords.reshape(1, -1)  # (1, num_nodes * 3)
+            after_coords = after_coords.unsqueeze(0)  # (1, num_nodes, 3)
             after_coords = after_coords.to(device)
             print(f"入力データの形状: {after_coords.shape}")
             
             with torch.no_grad():  # 勾配計算を無効化
                 # モデルに入力し、予測を取得
                 predicted_coords = model(after_coords)  # (1, num_nodes * 3)
-                predicted_coords = predicted_coords.reshape(num_nodes, 3)  # (num_nodes, 3)
+                predicted_coords = predicted_coords.view(-1, num_nodes, 3).squeeze(0)  # (num_nodes, 3)
             
             print(f"予測データの形状: {predicted_coords.shape}")
             
