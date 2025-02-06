@@ -1,85 +1,182 @@
 import os
+import ast
+import argparse
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List
+
+import json
 import torch
-from mlp_model import NodeMLP
+import torch.nn as nn
+from train_mlp import NodeMLP
 from module.stl_file_loader import STLFileLoader
 
+@dataclass
+class PredictConfig:
+    """予測設定を管理するクラス"""
+    # モデル設定
+    model_path: Path
+    hidden_dims: List[int]
+    device: str
+    
+    # ディレクトリ設定
+    after_dir: Path
+    before_dir: Path
+    output_dir: Path
+    
+    def __post_init__(self):
+        """出力ディレクトリの初期化"""
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+class ModelPredictor:
+    """MLPモデルの予測を管理するクラス"""
+    
+    def __init__(self, cfg: PredictConfig):
+        self.cfg = cfg
+        self.device = cfg.device
+    
+    def predict_stl_files(self):
+        """STLファイルの予測を実行"""
+        # lastを含むSTLファイルを検索
+        test_files = [f for f in os.listdir(self.cfg.after_dir) if "last" in f and f.endswith(".STL")]
+        
+        if not test_files:
+            print("予測対象となる'last'を含むSTLファイルが見つかりませんでした。")
+            return
+
+        total_loss = 0.0
+        
+        for test_file in test_files:
+            print(f"\n{test_file}の予測を開始します...")
+            test_path = self.cfg.after_dir / test_file
+            base_name = test_file[:-9]  # '_last.STL'を除去
+            before_file = base_name + "_first.STL"
+            before_path = self.cfg.before_dir / before_file
+            
+            loss = self._process_file(test_path, before_path)
+            total_loss += loss
+
+        # 平均lossの計算と保存
+        avg_loss = total_loss / len(test_files)
+        self._save_average_loss(avg_loss)
+    
+    def _process_file(self, test_path: Path, before_path: Path):
+        """個別のSTLファイルを処理"""
+        # STLファイルの読み込み
+        after_nodes, before_nodes, faces = STLFileLoader.load_file_pair(test_path, before_path)
+    
+        # モデルの準備
+        num_nodes = after_nodes.shape[0]
+        model = self._prepare_model(num_nodes)
+        criterion = nn.MSELoss()
+        
+        # 予測の実行と評価
+        predicted_coords = self._predict_coordinates(model, after_nodes)
+        
+        # lossの計算
+        before_coords = before_nodes[:, 1:].float().contiguous()
+        before_coords = before_coords.reshape(1, -1)
+        predicted_coords_flat = predicted_coords.reshape(1, -1)
+        loss = criterion(predicted_coords_flat, before_coords).item()
+        
+        # 予測結果の保存
+        self._save_prediction(predicted_coords, after_nodes, faces, test_path.stem[:-5])
+        return loss
+    
+    def _save_average_loss(self, avg_loss: float):
+        """平均lossをtraining_log.jsonに保存"""
+        log_path = self.cfg.model_path.parent / "training_logs.json"
+
+        with open(log_path, 'r') as f:
+            logs = json.load(f)
+        
+        logs["prediction_loss"] = avg_loss
+        
+        with open(log_path, 'w') as f:
+            json.dump(logs, f, indent=4)
+        print(f"平均Loss ({avg_loss:.6f})をtraining_logs.jsonに保存しました")
+
+    def _prepare_model(self, num_nodes: int) -> NodeMLP:
+        """モデルの準備"""
+        model = NodeMLP(num_nodes=num_nodes, hidden_dims=self.cfg.hidden_dims)
+        model.load_state_dict(torch.load(self.cfg.model_path, map_location=self.device, weights_only=True))
+        model.to(self.device)
+        model.eval()
+        return model
+    
+    def _predict_coordinates(self, model: NodeMLP, after_nodes: torch.Tensor) -> torch.Tensor:
+        """座標の予測を実行"""
+        after_coords = after_nodes[:, 1:].float().contiguous()
+        after_coords = after_coords.unsqueeze(0)
+        after_coords = after_coords.to(self.device)
+        print(f"入力データの形状: {after_coords.shape}")
+        
+        with torch.no_grad():
+            predicted_coords = model(after_coords)
+            predicted_coords = predicted_coords.view(-1, after_nodes.shape[0], 3).squeeze(0)
+        
+        print(f"予測データの形状: {predicted_coords.shape}")
+        
+        # 形状の検証
+        expected_shape = (after_nodes.shape[0], 3)
+        if predicted_coords.shape != expected_shape:
+            raise ValueError(f"予測データの形状が想定外です: {predicted_coords.shape}, 期待値: {expected_shape}")
+        
+        return predicted_coords.cpu()
+
+    def _save_prediction(self, predicted_coords: torch.Tensor, after_nodes: torch.Tensor,
+                        faces: torch.Tensor, base_name: str):
+        """予測結果の保存"""
+        predicted_nodes = torch.cat([after_nodes[:, 0:1], predicted_coords], dim=1)
+        output_file = f"predicted_{base_name}_first.stl"
+        output_path = self.cfg.output_dir / output_file
+        STLFileLoader.save_to_stl(predicted_nodes, faces, output_path)
+        print(f"予測結果を保存しました: {output_path}")
+
+def parse_args() -> PredictConfig:
+    """コマンドライン引数の解析"""
+    parser = argparse.ArgumentParser(description='MLPモデルを使用した予測の実行')
+    
+    # パスの設定
+    parser.add_argument("--model-path", type=str, required=True, help="学習済みモデルのパス")
+    parser.add_argument("--after-dir", type=str, required=True, help="予測対象のSTLファイルがあるディレクトリ")
+    parser.add_argument("--before-dir", type=str, required=True, help="比較用の初期状態STLファイルがあるディレクトリ")
+    parser.add_argument("--output-dir", type=str, required=True,
+                        help="予測結果の出力先ディレクトリ")
+    
+    # モデルのパラメータ
+    parser.add_argument("--hidden-dims", type=str, default="[256, 512, 256]", help="隠れ層のユニット数")
+    parser.add_argument("--device", type=str, choices=["cuda", "cpu"],  
+                        default="cuda" if torch.cuda.is_available() else "cpu",
+                        help="使用するデバイス（cuda/cpu）")
+    
+    args = parser.parse_args()
+    
+    # hidden_dimsの文字列をリストに変換
+    try:
+        args.hidden_dims = ast.literal_eval(args.hidden_dims)
+        if not isinstance(args.hidden_dims, list):
+            raise ValueError("hidden_dimsはリスト形式で指定してください")
+    except:
+        raise ValueError("hidden_dimsの形式が不正です。例: [256, 512, 256]")
+        
+    # 設定オブジェクトの作成
+    cfg = PredictConfig(
+        model_path=Path(args.model_path),
+        hidden_dims=args.hidden_dims,
+        device=args.device,
+        after_dir=Path(args.after_dir),
+        before_dir=Path(args.before_dir),
+        output_dir=Path(args.output_dir)
+    )
+    
+    return cfg
+
 def main():
-    # ディレクトリパスの設定
-    current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_path = os.path.join(current_dir, "experiments/exp001/models/node_mlp.pth")
-    after_dir = os.path.join(current_dir, "data/stl_test")
-    before_dir = os.path.join(current_dir, "data/stl_test")
-    output_dir = os.path.join(current_dir, "data/stl_predicted")
-    os.makedirs(output_dir, exist_ok=True)
-
-    # lastを含むSTLファイルを検索
-    test_files = [f for f in os.listdir(after_dir) if "last" in f and f.endswith(".stl")]
-    
-    if not test_files:
-        print("予測対象となる'last'を含むSTLファイルが見つかりませんでした。")
-        return
-    
-    for test_file in test_files:
-        print(f"\n{test_file}の予測を開始します...")
-        test_path = os.path.join(after_dir, test_file)
-        base_name = test_file[:-9]  # '_last.stl'を除去
-        before_file = base_name + "_first.stl"
-        before_path = os.path.join(before_dir, before_file)
-        
-        try:
-            # STLファイルの読み込み（メッシュ情報も含む）
-            after_nodes, before_nodes, mesh_data = STLFileLoader.load_file_pair(test_path, before_path)
-            
-            # node_idでソート
-            after_nodes = after_nodes[torch.argsort(after_nodes[:, 0])]
-            before_nodes = before_nodes[torch.argsort(before_nodes[:, 0])]
-        
-            # モデルの準備
-            num_nodes = after_nodes.shape[0]
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            # モデルの設定
-            hidden_dims = [256, 512, 256]  # mlp_model.pyのデフォルト値と同じ
-            model = NodeMLP(num_nodes=num_nodes, hidden_dims=hidden_dims)
-            # モデルの読み込み（weights_only=Trueでセキュリティ警告を回避）
-            model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-            model.to(device)
-            model.eval()  # モデルを評価モードにする
-
-            # 予測の実行
-            # 座標データを取得して形状を変換
-            after_coords = after_nodes[:, 1:].float().contiguous()  # (num_nodes, 3)
-            after_coords = after_coords.unsqueeze(0)  # (1, num_nodes, 3)
-            after_coords = after_coords.to(device)
-            print(f"入力データの形状: {after_coords.shape}")
-            
-            with torch.no_grad():  # 勾配計算を無効化
-                # モデルに入力し、予測を取得
-                predicted_coords = model(after_coords)  # (1, num_nodes * 3)
-                predicted_coords = predicted_coords.view(-1, num_nodes, 3).squeeze(0)  # (num_nodes, 3)
-            
-            print(f"予測データの形状: {predicted_coords.shape}")
-            
-            # 予測データの形状を確認
-            expected_shape = (num_nodes, 3)
-            if predicted_coords.shape != expected_shape:
-                raise ValueError(f"予測データの形状が想定外です: {predicted_coords.shape}, 期待値: {expected_shape}")
-            
-            # CPUに移動
-            predicted_coords = predicted_coords.cpu()
-            print(f"変形後の予測データの形状: {predicted_coords.shape}")
-            
-            # 予測結果をノードデータに組み込む
-            predicted_nodes = torch.cat([after_nodes[:, 0:1], predicted_coords], dim=1)
-
-            # 結果をSTLFileLoaderを使用して保存
-            output_file = f"predicted_{base_name}_first.stl"
-            output_path = os.path.join(output_dir, output_file)
-            STLFileLoader.save_to_stl(predicted_nodes, mesh_data, output_path)
-            print(f"予測結果を保存しました: {output_path}")
-            
-        except Exception as e:
-            print(f"エラーが発生しました: {str(e)}")
-            continue
+    """メイン処理"""
+    cfg = parse_args()
+    predictor = ModelPredictor(cfg)
+    predictor.predict_stl_files()
 
 if __name__ == "__main__":
     main()
