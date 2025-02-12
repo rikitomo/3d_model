@@ -85,7 +85,7 @@ class STLFileLoader:
         
         # ノードデータを作成（1からの連番でノード番号を付与）
         nodes = {}
-        for i, vertex in enumerate(vertices, start=1):
+        for i, vertex in enumerate(vertices, start=0):
             nodes[i] = vertex
         
         return nodes, faces
