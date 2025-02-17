@@ -9,5 +9,5 @@ trame
 vtk
 tqdm
 imageio
-scipy
+scipy==1.15.1
 torch
