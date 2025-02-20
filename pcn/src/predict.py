@@ -65,16 +65,22 @@ class ModelPredictor:
         # モデルの準備
         num_nodes = after_nodes.shape[0]
         model = self._prepare_model(num_nodes)
-        
+        criterion = nn.MSELoss()
+
         # 予測の実行と評価
         predicted_coords = self._predict_coordinates(model, after_nodes)
-        
+
         # lossの計算
         before_coords = before_nodes[:, 1:].float().contiguous()
-        # バッチ次元を追加
-        before_coords = before_coords.unsqueeze(0)
-        predicted_coords = predicted_coords.unsqueeze(0)
-        loss = chamfer_distance(predicted_coords, before_coords).item()
+        before_coords = before_coords.reshape(1, -1)
+        predicted_coords_flat = predicted_coords.reshape(1, -1)
+        loss = criterion(predicted_coords_flat, before_coords).item()
+        
+        # # lossの計算
+        # before_coords = before_nodes[:, 1:].float().contiguous()
+        # before_coords = before_coords.unsqueeze(0)
+        # predicted_coords = predicted_coords.unsqueeze(0)
+        # loss = chamfer_distance(predicted_coords, before_coords).item()
         
         # 予測結果の保存
         self._save_prediction(predicted_coords, after_nodes, faces, test_path.stem[:-5])
@@ -95,7 +101,7 @@ class ModelPredictor:
 
     def _prepare_model(self, num_nodes: int) -> NodePCN:
         """モデルの準備"""
-        model = NodePCN()
+        model = NodePCN(num_points=num_nodes)
         model.load_state_dict(torch.load(self.cfg.model_path, map_location=self.device, weights_only=True))
         model.to(self.device)
         model.eval()

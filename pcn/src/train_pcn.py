@@ -120,60 +120,48 @@ class PointNetEncoder(nn.Module):
         self.conv1 = nn.Conv1d(input_dim, 64, 1)
         self.conv2 = nn.Conv1d(64, 128, 1)
         self.conv3 = nn.Conv1d(128, latent_dim, 1)
-        self.bn1 = nn.BatchNorm1d(64)
-        self.bn2 = nn.BatchNorm1d(128)
-        self.bn3 = nn.BatchNorm1d(latent_dim)
-        # # BatchNormをLayerNormに変更
-        # self.ln1 = nn.LayerNorm([64])
-        # self.ln2 = nn.LayerNorm([128])
-        # self.ln3 = nn.LayerNorm([latent_dim])
+        self.ln1 = nn.LayerNorm([64])
+        self.ln2 = nn.LayerNorm([128])
+        self.ln3 = nn.LayerNorm([latent_dim])
 
     def forward(self, x):
-        batch_size, num_points, _ = x.shape
-        x = x.transpose(1, 2)
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = self.bn3(self.conv3(x))
-        # x = F.relu(self.ln1(self.conv1(x).transpose(1, 2)).transpose(1, 2))
-        # x = F.relu(self.ln2(self.conv2(x).transpose(1, 2)).transpose(1, 2))
-        # x = self.ln3(self.conv3(x).transpose(1, 2)).transpose(1, 2)
-        x = torch.max(x, dim=2, keepdim=False)[0]  # Global Max Pooling (batch, latent_dim)
-        return x, num_points
+        x = x.transpose(1, 2)  # (batch, channels, num_points)
+        x = F.relu(self.ln1(self.conv1(x).transpose(1, 2)).transpose(1, 2))
+        x = F.relu(self.ln2(self.conv2(x).transpose(1, 2)).transpose(1, 2))
+        x = self.ln3(self.conv3(x).transpose(1, 2)).transpose(1, 2)
+        x = torch.max(x, dim=2, keepdim=False)[0]  # Global Max Pooling　(batch, latent_dim)
+        return x
 
 class MLPDecoder(nn.Module):
     """MLPベースのデコーダ"""
-    def __init__(self, latent_dim=512):
+    def __init__(self, latent_dim=512, num_points=2048):
         super(MLPDecoder, self).__init__()
+        self.num_points = num_points
         self.fc1 = nn.Linear(latent_dim, 512)
         self.fc2 = nn.Linear(512, 1024)
-        self.bn1 = nn.BatchNorm1d(512)
-        self.bn2 = nn.BatchNorm1d(1024)
-        # # BatchNormをLayerNormに変更
-        # self.ln1 = nn.LayerNorm(512)
-        # self.ln2 = nn.LayerNorm(1024)
-        self.latent_dim = latent_dim
+        self.fc3 = nn.Linear(1024, self.num_points * 3)
+        self.ln1 = nn.LayerNorm(512)
+        self.ln2 = nn.LayerNorm(1024)
 
-    def forward(self, x, num_points):
+    def forward(self, x):
         batch_size = x.shape[0]
-        x = F.relu(self.bn1(self.fc1(x)))
-        x = F.relu(self.bn2(self.fc2(x)))
-        # x = F.relu(self.ln1(self.fc1(x)))
-        # x = F.relu(self.ln2(self.fc2(x)))
-        fc3 = nn.Linear(1024, num_points * 3).to(x.device)  # (batch_size, num_points * 3)
-        x = fc3(x)
-        x = x.view(batch_size, num_points, 3)
+        x = F.relu(self.ln1(self.fc1(x)))
+        x = F.relu(self.ln2(self.fc2(x)))
+        x = self.fc3(x)
+        x = x.view(batch_size, self.num_points, 3)  # Reshape to (batch, num_points, 3)
         return x
 
 class NodePCN(nn.Module):
     """Point Completion Network (PCN)"""
-    def __init__(self, latent_dim=512):
+    def __init__(self, latent_dim=512, num_points=2048):
         super(NodePCN, self).__init__()
+        self.num_points = num_points
         self.encoder = PointNetEncoder(latent_dim=latent_dim)
-        self.decoder = MLPDecoder(latent_dim=latent_dim)
+        self.decoder = MLPDecoder(latent_dim=latent_dim, num_points=self.num_points)
 
     def forward(self, x):
-        latent, num_points = self.encoder(x)  # (batch_size, latent_dim), num_points
-        out = self.decoder(latent, num_points)  # (batch_size, num_points, 3)
+        latent = self.encoder(x)
+        out = self.decoder(latent)
         return out
 
 class EarlyStopping:
@@ -257,7 +245,7 @@ class ModelTrainer:
     ):
         self.model = model.to(device)
         self.device = device
-        self.criterion = chamfer_distance
+        self.criterion = nn.MSELoss()
         self.cfg = cfg
         
     def train(
@@ -440,7 +428,7 @@ def main():
     print(f"Using device: {device}")
     
     # モデルの作成と学習
-    model = NodePCN()
+    model = NodePCN(latent_dim=512, num_points=num_nodes)
     trainer = ModelTrainer(model, cfg, device)
     
     # 学習の実行

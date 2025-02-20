@@ -1,3 +1,4 @@
+import sys
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -12,7 +13,7 @@ def run_predict(
 ):
     """予測を実行する関数"""
     cmd = [
-        "python", "predict.py",
+        sys.executable, "predict.py",
         "--model-path", model_path,
         "--after-dir", after_dir,
         "--before-dir", before_dir,
@@ -39,7 +40,7 @@ def run_experiment(
 ):
     """学習を実行する関数"""
     cmd = [
-        "python", "train_pcn.py",
+        sys.executable, "train_pcn.py",
         "--experiment_name", experiment_name,
         "--after_dir", after_dir,
         "--before_dir", before_dir,
@@ -123,8 +124,10 @@ def main():
         test_after_dir=str(data_dir / "stl_test"),
         test_before_dir=str(data_dir / "stl_test"),
         batch_size=16,
-        num_epochs=200,
+        num_epochs=400,
         early_stopping_min_epochs=10,
+        early_stopping_patience=10,
+        early_stopping_min_delta=0.00001,
         learning_rate=0.001
     )
 
