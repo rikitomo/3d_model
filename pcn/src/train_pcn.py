@@ -2,8 +2,8 @@ import os
 import json
 import time
 import argparse
-from typing import List, Optional
-from dataclasses import dataclass
+from typing import List, Optional, Tuple, Dict
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from module.stl_file_loader import STLFileLoader
+from module.normalizer import PointCloudNormalizer
 
 @dataclass
 class CFG:
@@ -61,12 +62,13 @@ class CFG:
 class AfterBeforeDataset(Dataset):
     """変形前後の3D形状データを管理するデータセット"""
     
-    def __init__(self, after_dir: str, before_dir: str):
+    def __init__(self, after_dir: str, before_dir: str, model_dir: Optional[str] = None):
         if not os.path.exists(after_dir) or not os.path.exists(before_dir):
             raise FileNotFoundError("指定されたディレクトリが存在しません")
 
         self.after_dir = after_dir
         self.before_dir = before_dir
+        self.model_dir = model_dir
         
         # ファイルリストの取得
         self.after_files = sorted([f for f in os.listdir(after_dir) if f.endswith("_last.STL")])
@@ -82,6 +84,43 @@ class AfterBeforeDataset(Dataset):
         
         if not self.file_pairs:
             raise ValueError("対応するファイルペアが見つかりません")
+        
+        # 正規化のためのオブジェクトを初期化
+        self.after_normalizer = PointCloudNormalizer()
+        self.before_normalizer = PointCloudNormalizer()
+        self.is_normalized = False
+    
+    def fit_normalizers(self) -> None:
+        """データセット全体に対して正規化パラメータを計算"""
+        if self.is_normalized:
+            return
+
+        all_after_coords = []
+        all_before_coords = []
+        
+        for after_file, before_file in self.file_pairs:
+            after_path = os.path.join(self.after_dir, after_file)
+            before_path = os.path.join(self.before_dir, before_file)
+            
+            after_nodes, before_nodes, _ = STLFileLoader.load_file_pair(after_path, before_path)
+            
+            all_after_coords.append(after_nodes[:, 1:].float())
+            all_before_coords.append(before_nodes[:, 1:].float())
+
+        # 全データを結合
+        all_after_coords = torch.cat(all_after_coords, dim=0)
+        all_before_coords = torch.cat(all_before_coords, dim=0)
+        
+        # 正規化パラメータの計算
+        self.after_normalizer.fit(all_after_coords)
+        self.before_normalizer.fit(all_before_coords)
+        
+        if self.model_dir:
+            # 正規化パラメータの保存
+            self.after_normalizer.save_params(Path(self.model_dir) / "after_normalizer_params.json")
+            self.before_normalizer.save_params(Path(self.model_dir) / "before_normalizer_params.json")
+        
+        self.is_normalized = True
     
     def __len__(self):
         return len(self.file_pairs)
@@ -98,10 +137,17 @@ class AfterBeforeDataset(Dataset):
         after_coords = after_nodes[:, 1:].float()
         before_coords = before_nodes[:, 1:].float()
         
+        if not self.is_normalized:
+            self.fit_normalizers()
+        
+        # 座標の正規化
+        after_coords = self.after_normalizer.transform(after_coords)
+        before_coords = self.before_normalizer.transform(before_coords)
+        
         return after_coords, before_coords, faces
 
 class PCN(nn.Module):
-    def __init__(self, num_dense=1072, latent_dim=1024, grid_size=2):
+    def __init__(self, num_dense, latent_dim=1024, grid_size=2):
         super().__init__()
 
         self.num_dense = num_dense
@@ -215,7 +261,8 @@ class ModelTrainer:
     ):
         self.model = model.to(device)
         self.device = device
-        self.criterion = nn.MSELoss()
+        # self.criterion = nn.MSELoss()  # MSEによる損失関数
+        self.criterion = lambda x, y: torch.sqrt(torch.sum((x - y) ** 2, dim=-1)).mean()  # ユークリッド距離による損失関数
         self.cfg = cfg
         
     def train(
@@ -377,7 +424,8 @@ def main():
     # データセットの作成
     dataset = AfterBeforeDataset(
         after_dir=args.after_dir,
-        before_dir=args.before_dir
+        before_dir=args.before_dir,
+        model_dir=str(cfg.model_dir)
     )
     
     # サンプルデータから節点数を取得

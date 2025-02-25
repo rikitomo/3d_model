@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from train_pcn import PCN
 from module.stl_file_loader import STLFileLoader
+from module.normalizer import PointCloudNormalizer
 
 @dataclass
 class PredictConfig:
@@ -59,23 +60,29 @@ class ModelPredictor:
     
     def _process_file(self, test_path: Path, before_path: Path):
         """個別のSTLファイルを処理"""
+        # 正規化パラメータの読み込み
+        self.after_normalizer = PointCloudNormalizer.load_params(self.cfg.model_path.parent / "after_normalizer_params.json")
+        self.before_normalizer = PointCloudNormalizer.load_params(self.cfg.model_path.parent / "before_normalizer_params.json")
+        
         # STLファイルの読み込み
         after_nodes, before_nodes, faces = STLFileLoader.load_file_pair(test_path, before_path)
     
         # モデルの準備
         num_nodes = after_nodes.shape[0]
         model = self._prepare_model(num_nodes)
-        criterion = nn.MSELoss()
+        # criterion = nn.MSELoss()  # MSEによる損失関数
+        criterion = lambda x, y: torch.sqrt(torch.sum((x - y) ** 2, dim=-1)).mean()  # ユークリッド距離による損失関数
 
         # 予測の実行と評価
         predicted_coords = self._predict_coordinates(model, after_nodes)
 
-        # lossの計算
+        # lossの計算（正規化されたデータで計算）
         before_coords = before_nodes[:, 1:].float().contiguous()
+        before_coords = self.before_normalizer.transform(before_coords)
         before_coords = before_coords.unsqueeze(0)  # バッチ次元を追加
         loss = criterion(predicted_coords, before_coords).item()
         
-        # 予測結果の保存
+        # 予測結果の保存（元のスケールに戻して保存）
         self._save_prediction(predicted_coords, after_nodes, faces, test_path.stem[:-5])
         return loss
     
@@ -105,6 +112,9 @@ class ModelPredictor:
         # 座標データのみを抽出 (x, y, z)
         after_coords = after_nodes[:, 1:].float().contiguous()
         
+        # 入力データの正規化
+        after_coords = self.after_normalizer.transform(after_coords)
+        
         # バッチ次元を追加してGPUに転送
         after_coords = after_coords.unsqueeze(0).to(self.device)
         print(f"入力データの形状: {after_coords.shape}")
@@ -117,6 +127,11 @@ class ModelPredictor:
         
         # CPUに転送
         predicted_coords = predicted_coords.cpu()
+        predicted_coords = predicted_coords.squeeze(0)  # バッチ次元を削除
+        
+        # 予測結果を元のスケールに戻す
+        predicted_coords = self.before_normalizer.inverse_transform(predicted_coords)
+        predicted_coords = predicted_coords.unsqueeze(0)  # バッチ次元を追加
         
         return predicted_coords
 
