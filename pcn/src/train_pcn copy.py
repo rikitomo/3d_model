@@ -98,52 +98,71 @@ class AfterBeforeDataset(Dataset):
         after_coords = after_nodes[:, 1:].float()
         before_coords = before_nodes[:, 1:].float()
         
+        # データの正規化
+        # # 重心を原点に移動(TODO: 処理は要確認)
+        # after_center = after_coords.mean(dim=0)
+        # after_coords = after_coords - after_center
+        # before_center = before_coords.mean(dim=0)
+        # before_coords = before_coords - before_center
+        
+        # # スケーリング(TODO: 処理は要確認)
+        # after_scale = after_coords.abs().max()
+        # after_coords = after_coords / after_scale
+        # before_scale = before_coords.abs().max()
+        # before_coords = before_coords / before_scale
+        
         return after_coords, before_coords, faces
 
-class PCN(nn.Module):
-    def __init__(self, num_dense=1072, latent_dim=1024, grid_size=2):
-        super().__init__()
+class PointNetEncoder(nn.Module):
+    """PointNetベースのエンコーダ"""
+    def __init__(self, input_dim=3, latent_dim=512):
+        super(PointNetEncoder, self).__init__()
+        self.conv1 = nn.Conv1d(input_dim, 64, 1)
+        self.conv2 = nn.Conv1d(64, 128, 1)
+        self.conv3 = nn.Conv1d(128, latent_dim, 1)
+        self.ln1 = nn.LayerNorm([64])
+        self.ln2 = nn.LayerNorm([128])
+        self.ln3 = nn.LayerNorm([latent_dim])
 
-        self.num_dense = num_dense
-        self.latent_dim = latent_dim
-        self.grid_size = grid_size
+    def forward(self, x):
+        x = x.transpose(1, 2)  # (batch, channels, num_points)
+        x = F.relu(self.ln1(self.conv1(x).transpose(1, 2)).transpose(1, 2))
+        x = F.relu(self.ln2(self.conv2(x).transpose(1, 2)).transpose(1, 2))
+        x = self.ln3(self.conv3(x).transpose(1, 2)).transpose(1, 2)
+        x = torch.max(x, dim=2, keepdim=False)[0]  # Global Max Pooling　(batch, latent_dim)
+        return x
 
-        self.first_conv = nn.Sequential(
-            nn.Conv1d(3, 128, 1),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(128, 256, 1)
-        )
+class MLPDecoder(nn.Module):
+    """MLPベースのデコーダ"""
+    def __init__(self, latent_dim=512, num_points=2048):
+        super(MLPDecoder, self).__init__()
+        self.num_points = num_points
+        self.fc1 = nn.Linear(latent_dim, 512)
+        self.fc2 = nn.Linear(512, 1024)
+        self.fc3 = nn.Linear(1024, self.num_points * 3)
+        self.ln1 = nn.LayerNorm(512)
+        self.ln2 = nn.LayerNorm(1024)
 
-        self.second_conv = nn.Sequential(
-            nn.Conv1d(512, 512, 1),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(512, self.latent_dim, 1)
-        )
+    def forward(self, x):
+        batch_size = x.shape[0]
+        x = F.relu(self.ln1(self.fc1(x)))
+        x = F.relu(self.ln2(self.fc2(x)))
+        x = self.fc3(x)
+        x = x.view(batch_size, self.num_points, 3)  # Reshape to (batch, num_points, 3)
+        return x
 
-        self.mlp = nn.Sequential(
-            nn.Linear(self.latent_dim, 1024),
-            nn.ReLU(inplace=True),
-            nn.Linear(1024, 1024),
-            nn.ReLU(inplace=True),
-            nn.Linear(1024, 3 * num_dense)
-        )
+class NodePCN(nn.Module):
+    """Point Completion Network (PCN)"""
+    def __init__(self, latent_dim=512, num_points=2048):
+        super(NodePCN, self).__init__()
+        self.num_points = num_points
+        self.encoder = PointNetEncoder(latent_dim=latent_dim)
+        self.decoder = MLPDecoder(latent_dim=latent_dim, num_points=self.num_points)
 
-        a = torch.linspace(-0.05, 0.05, steps=self.grid_size, dtype=torch.float).view(1, self.grid_size).expand(self.grid_size, self.grid_size).reshape(1, -1)
-        b = torch.linspace(-0.05, 0.05, steps=self.grid_size, dtype=torch.float).view(self.grid_size, 1).expand(self.grid_size, self.grid_size).reshape(1, -1)
-        self.folding_seed = torch.cat([a, b], dim=0).view(1, 2, self.grid_size ** 2)
-
-    def forward(self, xyz):
-        B, N, _ = xyz.shape
-        feature = self.first_conv(xyz.transpose(2, 1))
-        feature_global = torch.max(feature, dim=2, keepdim=True)[0]
-        feature = torch.cat([feature_global.expand(-1, -1, N), feature], dim=1)
-        feature = self.second_conv(feature)
-        feature_global = torch.max(feature, dim=2, keepdim=False)[0]
-        coarse = self.mlp(feature_global).reshape(B, N, 3)  # [B, N, 3]
-
-        return coarse  # [B, N, 3]
+    def forward(self, x):
+        latent = self.encoder(x)
+        out = self.decoder(latent)
+        return out
 
 class EarlyStopping:
     """検証損失の監視による早期学習停止の制御"""
@@ -203,6 +222,17 @@ def plot_learning_curve(train_losses: List[float], val_losses: List[float], save
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path)
     plt.close()
+
+def chamfer_distance(pc1, pc2):
+    """Chamfer Distance を計算"""
+    pc1_expand = pc1.unsqueeze(2)  # (batch, num_points, 1, 3)
+    pc2_expand = pc2.unsqueeze(1)  # (batch, 1, num_points, 3)
+
+    dist = torch.norm(pc1_expand - pc2_expand, dim=-1)  # (batch, num_points, num_points)
+    cd1 = torch.min(dist, dim=2)[0].mean(1)  # (batch,)
+    cd2 = torch.min(dist, dim=1)[0].mean(1)  # (batch,)
+    
+    return (cd1 + cd2).mean()  # Scalar loss
 
 class ModelTrainer:
     """PCNモデルの学習を管理するクラス"""
@@ -272,7 +302,7 @@ class ModelTrainer:
             before_coords = before_coords.to(self.device)  # (B, num_points, 3)
             
             optimizer.zero_grad()
-            pred_coords = self.model(after_coords)
+            pred_coords = self.model(after_coords)  # (B, num_points, 3)
             loss = self.criterion(pred_coords, before_coords)
             
             loss.backward()
@@ -398,7 +428,7 @@ def main():
     print(f"Using device: {device}")
     
     # モデルの作成と学習
-    model = PCN(num_dense=num_nodes)
+    model = NodePCN(latent_dim=512, num_points=num_nodes)
     trainer = ModelTrainer(model, cfg, device)
     
     # 学習の実行

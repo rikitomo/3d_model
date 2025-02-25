@@ -6,7 +6,7 @@ from pathlib import Path
 import json
 import torch
 import torch.nn as nn
-from train_pcn import NodePCN, chamfer_distance
+from train_pcn import PCN
 from module.stl_file_loader import STLFileLoader
 
 @dataclass
@@ -72,15 +72,8 @@ class ModelPredictor:
 
         # lossの計算
         before_coords = before_nodes[:, 1:].float().contiguous()
-        before_coords = before_coords.reshape(1, -1)
-        predicted_coords_flat = predicted_coords.reshape(1, -1)
-        loss = criterion(predicted_coords_flat, before_coords).item()
-        
-        # # lossの計算
-        # before_coords = before_nodes[:, 1:].float().contiguous()
-        # before_coords = before_coords.unsqueeze(0)
-        # predicted_coords = predicted_coords.unsqueeze(0)
-        # loss = chamfer_distance(predicted_coords, before_coords).item()
+        before_coords = before_coords.unsqueeze(0)  # バッチ次元を追加
+        loss = criterion(predicted_coords, before_coords).item()
         
         # 予測結果の保存
         self._save_prediction(predicted_coords, after_nodes, faces, test_path.stem[:-5])
@@ -99,27 +92,18 @@ class ModelPredictor:
             json.dump(logs, f, indent=4)
         print(f"平均Loss ({avg_loss:.6f})をtraining_logs.jsonに保存しました")
 
-    def _prepare_model(self, num_nodes: int) -> NodePCN:
+    def _prepare_model(self, num_nodes: int) -> PCN:
         """モデルの準備"""
-        model = NodePCN(num_points=num_nodes)
-        model.load_state_dict(torch.load(self.cfg.model_path, map_location=self.device, weights_only=True))
+        model = PCN(num_dense=num_nodes)
+        model.load_state_dict(torch.load(self.cfg.model_path, map_location=self.device))
         model.to(self.device)
         model.eval()
         return model
     
-    def _predict_coordinates(self, model: NodePCN, after_nodes: torch.Tensor) -> torch.Tensor:
+    def _predict_coordinates(self, model: PCN, after_nodes: torch.Tensor) -> torch.Tensor:
         """座標の予測を実行"""
         # 座標データのみを抽出 (x, y, z)
         after_coords = after_nodes[:, 1:].float().contiguous()
-        
-        # # データの正規化処理は学習時と同じにする
-        # # 重心を原点に移動
-        # after_center = after_coords.mean(dim=0)
-        # after_coords = after_coords - after_center
-        
-        # # スケーリング
-        # after_scale = after_coords.abs().max()
-        # after_coords = after_coords / after_scale
         
         # バッチ次元を追加してGPUに転送
         after_coords = after_coords.unsqueeze(0).to(self.device)
@@ -131,12 +115,8 @@ class ModelPredictor:
         
         print(f"予測データの形状: {predicted_coords.shape}")
         
-        # バッチ次元を削除してCPUに転送
-        predicted_coords = predicted_coords.squeeze(0).cpu()
-        
-        # # 必要に応じて正規化を元に戻す
-        # # predicted_coords = predicted_coords * after_scale
-        # # predicted_coords = predicted_coords + after_center
+        # CPUに転送
+        predicted_coords = predicted_coords.cpu()
         
         return predicted_coords
 
