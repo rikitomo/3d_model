@@ -13,7 +13,7 @@ def run_predict(
 ):
     """予測を実行する関数"""
     cmd = [
-        sys.executable, "predict.py",
+        sys.executable, "predict_x.py",
         "--model-path", model_path,
         "--after-dir", after_dir,
         "--before-dir", before_dir,
@@ -40,7 +40,7 @@ def run_experiment(
 ):
     """学習を実行する関数"""
     cmd = [
-        sys.executable, "train_pcn.py",
+        sys.executable, "train_pcn_x.py",
         "--experiment_name", experiment_name,
         "--after_dir", after_dir,
         "--before_dir", before_dir,
@@ -116,9 +116,9 @@ def main():
     project_root = Path(__file__).parent.parent
     data_dir = project_root / "data"
     
-    # 実験1: 学習と予測
+    # 実験
     run_training_and_prediction(
-        experiment_name="exp001",
+        experiment_name="exp201",
         train_after_dir=str(data_dir / "stl_train"),
         train_before_dir=str(data_dir / "stl_train"),
         test_after_dir=str(data_dir / "stl_test"),
@@ -126,9 +126,9 @@ def main():
         batch_size=16,
         num_epochs=400,
         early_stopping_min_epochs=10,
-        early_stopping_patience=10,
+        early_stopping_patience=20,
         early_stopping_min_delta=0.00001,
-        learning_rate=0.001
+        learning_rate=0.0001
     )
 
 if __name__ == "__main__":

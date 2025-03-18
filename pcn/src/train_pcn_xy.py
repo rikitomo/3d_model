@@ -3,7 +3,7 @@ import json
 import time
 import argparse
 from typing import List, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -148,7 +148,7 @@ class PCN(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(1024, 1024),
             nn.ReLU(inplace=True),
-            nn.Linear(1024, 3 * num_dense)
+            nn.Linear(1024, 2 * num_dense)  # x,y座標のみを出力
         )
 
     def forward(self, xyz):
@@ -158,9 +158,9 @@ class PCN(nn.Module):
         feature = torch.cat([feature_global.expand(-1, -1, N), feature], dim=1)
         feature = self.second_conv(feature)
         feature_global = torch.max(feature, dim=2, keepdim=False)[0]
-        coarse = self.mlp(feature_global).reshape(B, N, 3)  # [B, N, 3]
+        coarse = self.mlp(feature_global).reshape(B, N, 2)  # [B, N, 2]（x,y座標のみ）
 
-        return coarse  # [B, N, 3]
+        return coarse  # [B, N, 2]
 
 class EarlyStopping:
     """検証損失の監視による早期学習停止の制御"""
@@ -289,8 +289,9 @@ class ModelTrainer:
             before_coords = before_coords.to(self.device)  # (B, num_points, 3)
             
             optimizer.zero_grad()
-            pred_coords = self.model(after_coords)
-            loss = self.criterion(pred_coords, before_coords)
+            pred_coords = self.model(after_coords)  # [B, N, 2]
+            before_xy = before_coords[:, :, 0:2]  # x,y座標のみを抽出
+            loss = self.criterion(pred_coords, before_xy)
             
             loss.backward()
             optimizer.step()
@@ -311,8 +312,9 @@ class ModelTrainer:
                 after_coords = after_coords.to(self.device)
                 before_coords = before_coords.to(self.device)
                 
-                pred_coords = self.model(after_coords)
-                loss = self.criterion(pred_coords, before_coords)
+                pred_coords = self.model(after_coords)  # [B, N, 2]
+                before_xy = before_coords[:, :, 0:2]  # x,y座標のみを抽出
+                loss = self.criterion(pred_coords, before_xy)
                 
                 total_loss += loss.item()
                 num_batches += 1

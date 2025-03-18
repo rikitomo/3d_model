@@ -6,7 +6,10 @@ from pathlib import Path
 import json
 import torch
 import torch.nn as nn
-from train_pcn import PCN
+
+import sys
+sys.path.append("pcn/src")
+from train_pcn_x import PCN
 from module.stl_file_loader import STLFileLoader
 
 @dataclass
@@ -68,15 +71,15 @@ class ModelPredictor:
         criterion = nn.MSELoss()
 
         # 予測の実行と評価
-        predicted_coords = self._predict_coordinates(model, after_nodes)
+        predicted_x = self._predict_coordinates(model, after_nodes).to("cpu")  # [B, N, 1]
 
-        # lossの計算
-        before_coords = before_nodes[:, 1:].float().contiguous()
-        before_coords = before_coords.unsqueeze(0)  # バッチ次元を追加
-        loss = criterion(predicted_coords, before_coords).item()
+        # lossの計算（x座標のみ）
+        before_x = before_nodes[:, 1:2].float().contiguous()  # x座標のみ
+        before_x = before_x.unsqueeze(0)  # バッチ次元を追加
+        loss = criterion(predicted_x, before_x).item()
         
         # 予測結果の保存
-        self._save_prediction(predicted_coords, after_nodes, faces, test_path.stem[:-5])
+        self._save_prediction(predicted_x, after_nodes, faces, test_path.stem[:-5])
         return loss
     
     def _save_average_loss(self, avg_loss: float):
@@ -111,16 +114,24 @@ class ModelPredictor:
         
         # 予測の実行
         with torch.no_grad():
-            predicted_coords = model(after_coords)
+            predicted_x = model(after_coords)  # [B, N, 1]
         
-        print(f"予測データの形状: {predicted_coords.shape}")
+        print(f"予測データの形状: {predicted_x.shape}")
         
-        return predicted_coords
+        return predicted_x
 
-    def _save_prediction(self, predicted_coords: torch.Tensor, after_nodes: torch.Tensor,
+    def _save_prediction(self, predicted_x: torch.Tensor, after_nodes: torch.Tensor,
                         faces: torch.Tensor, base_name: str):
         """予測結果の保存"""
-        predicted_coords = predicted_coords.squeeze(0)  # バッチ次元を削除
+        predicted_x = predicted_x.squeeze(0)  # バッチ次元を削除 [N, 1]
+        # x座標は予測値、y座標は元の値、z座標は0を使用
+        zeros = torch.zeros_like(predicted_x)  # z座標用の0
+        predicted_coords = torch.cat([
+            predicted_x,  # x座標
+            after_nodes[:, 2:3],  # y座標（元の値）
+            zeros  # z座標（0）
+        ], dim=1)
+        
         predicted_nodes = torch.cat([after_nodes[:, 0:1], predicted_coords], dim=1)
         output_file = f"predicted_{base_name}_first.stl"
         output_path = self.cfg.output_dir / output_file
@@ -129,7 +140,7 @@ class ModelPredictor:
 
 def parse_args() -> PredictConfig:
     """コマンドライン引数の解析"""
-    parser = argparse.ArgumentParser(description='PCNモデルを使用した予測の実行')
+    parser = argparse.ArgumentParser(description='PCNモデルを使用した予測の実行（x座標のみ）')
     
     # パスの設定
     parser.add_argument("--model-path", type=str, required=True, help="学習済みモデルのパス")

@@ -3,7 +3,7 @@ import json
 import time
 import argparse
 from typing import List, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -100,25 +100,47 @@ class AfterBeforeDataset(Dataset):
         
         return after_coords, before_coords, faces
 
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_channels, out_channels, 1)
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.conv2 = nn.Conv1d(out_channels, out_channels, 1)
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+        if in_channels != out_channels:
+            self.shortcut = nn.Conv1d(in_channels, out_channels, 1)
+        else:
+            self.shortcut = nn.Identity()
+
+    def forward(self, x):
+        residual = self.shortcut(x)  # Skip connection
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += residual  # Element-wise addition
+        out = self.relu(out)
+        return out
+
 class PCN(nn.Module):
     def __init__(self, num_dense, latent_dim=512):
         super().__init__()
-
+        
         self.num_dense = num_dense
         self.latent_dim = latent_dim
 
         self.first_conv = nn.Sequential(
-            nn.Conv1d(3, 128, 1),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(128, 256, 1)
+            ResidualBlock(3, 64),
+            ResidualBlock(64, 128),
+            ResidualBlock(128, 256)
         )
 
         self.second_conv = nn.Sequential(
-            nn.Conv1d(512, 512, 1),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(512, self.latent_dim, 1)
+            ResidualBlock(512, 512),
+            ResidualBlock(512, self.latent_dim)
         )
 
         self.mlp = nn.Sequential(
